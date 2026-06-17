@@ -1,6 +1,7 @@
 // Copyright 2018 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::fs::File;
+#[cfg(any(feature = "tls", test))]
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
@@ -8,10 +9,14 @@ use std::time::Duration;
 
 use log::info;
 use regex::Regex;
+#[cfg(feature = "tls")]
+use tonic::transport::Certificate;
 use tonic::transport::Channel;
+#[cfg(feature = "tls")]
 use tonic::transport::ClientTlsConfig;
+use tonic::transport::Endpoint;
+#[cfg(feature = "tls")]
 use tonic::transport::Identity;
-use tonic::transport::{Certificate, Endpoint};
 
 use crate::internal_err;
 use crate::Result;
@@ -25,6 +30,7 @@ fn check_pem_file(tag: &str, path: &Path) -> Result<File> {
         .map_err(|e| internal_err!("failed to open {} to load {}: {:?}", path.display(), tag, e))
 }
 
+#[cfg(any(feature = "tls", test))]
 fn load_pem_file(tag: &str, path: &Path) -> Result<Vec<u8>> {
     let mut file = check_pem_file(tag, path)?;
     let mut key = vec![];
@@ -97,6 +103,22 @@ impl SecurityManager {
     }
 
     async fn tls_channel(&self, addr: &str) -> Result<Endpoint> {
+        #[cfg(feature = "tls")]
+        {
+            return self.tls_channel_with_tonic_tls(addr).await;
+        }
+
+        #[cfg(not(feature = "tls"))]
+        {
+            let _ = (addr, &self.cert_path, &self.key_path);
+            Err(internal_err!(
+                "TLS support is disabled in this build of tikv-client"
+            ))
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    async fn tls_channel_with_tonic_tls(&self, addr: &str) -> Result<Endpoint> {
         let (ca, cert, key) = self.load_tls_materials().await?;
         let addr = "https://".to_string() + &SCHEME_REG.replace(addr, "");
         let builder = self.endpoint(addr.to_string())?;
@@ -107,6 +129,7 @@ impl SecurityManager {
         Ok(builder)
     }
 
+    #[cfg(any(feature = "tls", test))]
     async fn load_tls_materials(&self) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let ca_path = self
             .ca_path
